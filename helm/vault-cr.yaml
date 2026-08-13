@@ -1,0 +1,122 @@
+# Vault custom resource for the bank-vaults vault-operator.
+# Single-node, Raft (integrated) storage - fine for this POC, not for production HA
+# (bump `size` to 3+ and use a real StorageClass for that).
+#
+# What this declares up front (no extra CLI steps needed for these):
+#   - TLS-enabled listener (operator auto-generates and manages the server cert/key)
+#   - KV v2 secrets engine mounted at "secret/"
+#   - A demo secret pre-seeded at secret/data/vcluster-demo/db (startupSecrets)
+#   - A policy ("vcluster-demo-read") that can read that path
+#
+# What is NOT declared here (done later, imperatively, via scripts/03-configure-vault-auth.sh):
+#   - The Kubernetes auth method and role for the vcluster's workloads.
+#   Reason: that config needs the vcluster's own API server address, CA cert, and a
+#   token-reviewer JWT - none of which exist until the vcluster itself has been created.
+#   See README "Why Vault auth is configured after the vcluster exists".
+apiVersion: "vault.banzaicloud.com/v1alpha1"
+kind: "Vault"
+metadata:
+  name: "vault"
+  namespace: "vault"
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  size: 1
+  image: hashicorp/vault:2.0.1
+
+  serviceAccount: vault
+  serviceType: ClusterIP
+
+  # Namespaces the operator should copy the generated CA certificate Secret into, so that
+  # workloads in those namespaces can trust Vault's TLS listener when the webhook injects
+  # a vault-agent/vault-env container into them. This must include the HOST namespace that
+  # backs the vcluster (vcluster syncs its virtual pods into ONE real namespace on the host -
+  # see README). Update this if you create the vcluster in a differently-named namespace.
+  caNamespaces:
+    - "vault-demo"
+
+  volumeClaimTemplates:
+    - metadata:
+        name: vault-raft
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        resources:
+          requests:
+            storage: 1Gi
+
+  volumeMounts:
+    - name: vault-raft
+      mountPath: /vault/file
+
+  # kind's node filesystem needs this for the raft data directory to be writable.
+  # Harmless (and unnecessary) on most other clusters.
+  vaultInitContainers:
+    - name: raft-permission
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - chown -R 100:1000 /vault/file
+      volumeMounts:
+        - name: vault-raft
+          mountPath: /vault/file
+
+  unsealConfig:
+    options:
+      preFlightChecks: true
+      storeRootToken: true
+      secretShares: 5
+      secretThreshold: 3
+    kubernetes:
+      secretNamespace: vault
+
+  config:
+    disable_mlock: true
+    storage:
+      raft:
+        path: "/vault/file"
+    listener:
+      tcp:
+        address: "0.0.0.0:8200"
+        tls_cert_file: /vault/tls/server.crt
+        tls_key_file: /vault/tls/server.key
+    api_addr: https://vault.vault:8200
+    cluster_addr: "https://${.Env.POD_NAME}:8201"
+    ui: true
+
+  statsdDisabled: true
+
+  resources:
+    vault:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  externalConfig:
+    policies:
+      - name: vcluster-demo-read
+        rules: |
+          path "secret/data/vcluster-demo/*" {
+            capabilities = ["read", "list"]
+          }
+
+    secrets:
+      - path: secret
+        type: kv
+        description: General secrets.
+        options:
+          version: 2
+
+    # Seeds a demo secret at boot so there's something real to read end-to-end.
+    startupSecrets:
+      - type: kv
+        path: secret/data/vcluster-demo/db
+        data:
+          data:
+            username: demo_app
+            password: S3cr3t-From-Host-Vault!

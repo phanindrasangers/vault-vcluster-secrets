@@ -1,0 +1,90 @@
+# RBAC for the Vault CR's own ServiceAccount ("vault"), namespaced to the "vault" namespace.
+# This is separate from the vault-operator's own RBAC (installed by its Helm chart) - this
+# is what the running Vault Pod itself needs: permission to patch its own Pod (for the
+# operator's Bank-Vaults sidecar/unsealer to annotate it), full access to Secrets in this
+# namespace (to store/read the unseal keys and root token), and leader-election permissions.
+# Source: https://github.com/bank-vaults/vault-operator/tree/main/deploy/rbac (namespace
+# changed from the upstream default "default" to "vault").
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: vault
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault
+  namespace: vault
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault
+  namespace: vault
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vault
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: vault
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: leader-election-role
+  namespace: vault
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: leader-election-rolebinding
+  namespace: vault
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: leader-election-role
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: vault
+---
+# Lets the "vault" ServiceAccount validate tokens via TokenReview against the HOST cluster's
+# own API - used only if you point Vault's Kubernetes auth method at the host cluster itself
+# (e.g. for workloads running directly on the host, outside any vcluster). Not used by the
+# vcluster-facing auth flow this repo sets up (see README) - kept for completeness/parity
+# with upstream's recommended setup, and it's a genuinely useful capability to have for free.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: vault
