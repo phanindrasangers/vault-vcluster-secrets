@@ -6,6 +6,13 @@ a Kubernetes Secret, not `vcluster connect`. For the full POC (installing Vault 
 webhook, architecture diagrams, every bug we hit building this), see
 [README.md](README.md) - this file only covers the connection itself.
 
+**Want this automated instead of done by hand?** Once you have a kubeconfig for the
+vcluster (Step 0 below), `../scripts/setup-vault-k8s-auth.sh --target vcluster` runs Steps
+1-4 for you in one command - the RBAC manifest, the auth mount config, the policy, and the
+role. See the README section "Automating a new Kubernetes auth backend" for the exact
+invocation. The steps below are what it's doing under the hood, useful if you want to
+understand or adapt them.
+
 ## The one thing to understand before touching config
 
 A vcluster mints its **own** service-account tokens, signed by its own control plane —

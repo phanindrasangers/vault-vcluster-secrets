@@ -10,7 +10,9 @@ them first.
 
 **Just want the connection steps, not the full install?** See
 [CONNECT-VCLUSTER-TO-VAULT.md](CONNECT-VCLUSTER-TO-VAULT.md) for a focused, config-by-config
-walkthrough of wiring a vcluster workload up to an already-running host Vault.
+walkthrough of wiring a vcluster workload up to an already-running host Vault, or run
+`scripts/setup-vault-k8s-auth.sh` to automate that whole walkthrough (RBAC, auth mount,
+policy, role) in one command - see [scripts/setup-vault-k8s-auth.sh](#automating-a-new-kubernetes-auth-backend) below.
 
 This is a POC, not a production design. Single-node Vault, no HA, a demo secret seeded in
 plaintext in a tracked file. See [Hardening before production](#hardening-before-anything-beyond-a-poc).
@@ -94,6 +96,7 @@ scripts/
   05-deploy-demo.sh
   06-install-in-vcluster-reloader.sh
   rotate-demo-secret.sh                         Rotates the secret and watches it auto-reload
+  setup-vault-k8s-auth.sh                       Automates wiring up a NEW auth backend (host or vcluster) - see below
 ```
 
 ## Install
@@ -118,6 +121,39 @@ token-reviewer credential minted *from inside it* - none of which exist until th
 itself has been created. This is why the auth mount is configured imperatively in step 4,
 not declared upfront in the Vault CR alongside the KV engine and demo secret (which have no
 such dependency and are fully declarative in `helm/vault-cr.yaml`).
+
+## Automating a new Kubernetes auth backend
+
+`scripts/setup-vault-k8s-auth.sh` does everything in steps 4/6 above (and everything in
+`CONNECT-VCLUSTER-TO-VAULT.md`) in one command, for either target:
+
+```bash
+# Host cluster: add a role for another host-side workload to the existing "kubernetes" mount
+./scripts/setup-vault-k8s-auth.sh --target host \
+  --role-name my-app --bound-sa-name my-app --bound-sa-namespace default \
+  --path-glob 'my-app/*'
+
+# vcluster: wire up a brand-new vcluster end to end (RBAC + auth mount + policy + role)
+./scripts/setup-vault-k8s-auth.sh --target vcluster \
+  --kubeconfig /tmp/vcluster-admin-kubeconfig.yaml \
+  --kubernetes-host https://demo.vault-demo:443 \
+  --auth-path kubernetes-demo \
+  --role-name demo-app --bound-sa-name vault-reader --bound-sa-namespace default \
+  --path-glob 'demo-app/*'
+```
+
+For `--target vcluster` it creates the durable ServiceAccount + `kubernetes.io/service-account-token`
+Secret + `system:auth-delegator` ClusterRoleBinding itself (the same manifest from
+`CONNECT-VCLUSTER-TO-VAULT.md` Steps 1-2) - nothing to apply by hand first. For `--target host`
+it skips RBAC entirely and reuses Vault's own pod identity, which already has
+`system:auth-delegator` via `helm/vault-rbac.yaml`. Either way it finishes by writing a
+policy (full access to a KV path glob you choose - narrow `--path-glob` for anything beyond
+a demo) and a role bound to your workload's ServiceAccount, so the only thing left to do is
+annotate the Deployment with `vault.security.banzaicloud.io/*` (see
+`examples/demo-deployment.yaml`) and point it at the role/path the script printed. Run it
+with `--help` for the full flag reference. Verified against this repo's own `vault` and
+`demo` vcluster: a login with the created role returned exactly the policy the script wrote,
+nothing more.
 
 ## The two real gotchas we hit building this
 
